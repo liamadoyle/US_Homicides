@@ -3,8 +3,8 @@
 This folder contains the analysis files for the **US Homicides (1976-2024)** project. The analyses focus on exploring/visualizing the data and building a machine learning model to predict whether a homicide case will be solved.
 
 ## File Descriptions
-- **`analysis.qmd`**: A Quarto document containing the full code and narrative for the analysis. This file is intended for those with R and RStudio installed who wish to reproduce or adapt the analysis.
-- **`analysis.html`**: A rendered HTML file of the Quarto document, viewable in any web browser. This is a static version of the analysis, including both code and output, for easy sharing.
+- **`us_homicide_data.qmd`**: A Quarto document containing the full code and narrative for the analysis. This file is intended for those with R and RStudio installed who wish to reproduce or adapt the analysis.
+- **`us_homicide_data.html`**: A rendered HTML file of the Quarto document, viewable in any web browser. This is a static version of the analysis, including both code and output, for easy sharing.
 
 ## Reproducibility
 ### Requirements

@@ -1,0 +1,2180 @@
+---
+title: "Predicting Unsolved Homicides (1976-2024)"
+author: "Liam A. Doyle"
+format: html
+toc: true
+code-fold: true
+embed-resources: true
+editor: visual
+---
+
+# Predicting Unsolved Homicides in the United States (2004-2024)
+
+## Project Description
+
+In this project, I will be using *R* to examine an empirical research questions regarding unsolved homicides in the United States. I will be using the Murder Accountability Project's supplementary homicide data. This dataset is a compilation of case-level data for solved and unsolved homicides occurring between 1976 and 2024. In total, there is data on 894,637 homicide cases. For the purpose of the project, only cases involving murder or non-negligent manslaughter were investigated. As I lack the computational resources to adequately model the full dataset, I will be restricting my analysis to homicides between 2019 and 2024.
+
+## Research Questions
+
+In this project, I will be examining the following research question:
+
+-   **Research Question:**
+    -   How can the case status (i.e., unsolved vs. solved) of American homicide cases be optimally predicted using information available to investigators at the outset of an investigation?
+
+### Predictors
+
+Below is the list of predictors that will be used from the dataset:
+
+-   **Demographic Variables**
+    -   `VicAge`: The age of the victim.
+    -   `VicSex`: The biological sex of the victim.
+    -   `VicRace`: The race of the victim.
+    -   `OffAge`: The age of the offender.
+    -   `OffSex`: The biological sex of the offender.
+    -   `OffRace`: The race of the offender.
+-   **Situational Variables**
+    -   `Relationship`: The relationship between the offender and the victim.
+    -   `Circumstance`: The circumstances of the crime (e.g., robbery) using the FBI's coding scheme.
+    -   `Weapon`: The type of weapon used in the homicide.
+    -   `OffCount`: The number of additional offenders in the incident report.
+    -   `VicCount`: The number of additional victims included in the incident report.
+-   **Temporal Variables**
+    -   `Year`: The year that the homicide was committed or that the victim's body was recovered.
+    -   `Month`: The month that the homicide was committed or that the victim's body was recovered.
+-   **Geographic Variables**
+    -   `State`: The state of the agency making the report.
+    -   `Agentype`: The type of law enforcement agency filing the incident report (e.g., sheriff, state police).
+
+# Data Analysis
+
+## Loading Packages and Data
+
+```{r library, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(readr)
+library(psych)
+library(gt)
+library(extrafont)
+library(maps)
+library(tidymodels)
+library(parallel)
+library(doParallel)
+library(DALEXtra)
+```
+
+```{r import, message=FALSE}
+data <- read_csv("data.csv")
+```
+
+## Data Processing
+
+### Adding a New ID Variable
+
+In order to uniquely identify each homicide case, a new ID variable was introduced.
+
+```{r id}
+# Using the mutate function to create a new variable that creates a unique ID value for each observation
+
+data <- data %>%
+  mutate(ID = row_number())
+```
+
+### Selecting Relevant Cases
+
+As I am primarily interested in murder or manslaughter cases (as opposed to cases where negligence led to death), I am filtering the data to only include cases where the `Homicide` code is "Murder and non-negligent manslaughter". In addition, I will be focusing on cases between 2019 and 2024 to lighten my computational load.
+
+```{r exclude}
+# Selecting cases between 2019 and 2024 where the `Homicide` code is "Murder and non-negligent manslaughter" using the filter verb
+
+data <- data %>%
+  filter(Homicide == "Murder and non-negligent manslaughter" & Year >= 2019)
+```
+
+### Selecting Variables of Interest
+
+I selected a subset of variables from the dataset that I believed would have some value in the classification of whether a case was solved vs. unsolved.
+
+```{r select}
+# Using dplyr to save a new copy of the "data" object with variables of interest
+
+data <- data %>%
+  select(Solved, VicAge, VicSex, VicRace, VicEthnic, OffAge, OffSex, OffRace,
+         OffEthnic, Relationship, Circumstance, Weapon, OffCount, VicCount,
+         Year, Month, State, Agentype)
+```
+
+### Changing Missing Values to NA
+
+In the original dataset, missing values for numeric variables (e.g., `VicAge`) were coded as "999". In order to count/manipulate these more easily using *R* functions, I changed these to the `NA` standard.
+
+```{r missing}
+# Currently, missing values for `VicAge` and `OffAge` are coded as `999`. I will change that to the standard in R (i.e., `NA`)
+
+data <- data %>%
+  mutate_at(vars(VicAge, OffAge), ~ na_if(., 999))
+```
+
+### Recoding Variables as Factors
+
+For plotting/analysis, I recoded the categorical variables in the dataset as factors. In some cases, I stipulated the orders of the factors (e.g., `Solved`). In others, I simply allowed them to be sorted alphabetically (e.g., `Weapon`).
+
+```{r factors}
+# Recoding `Solved` as a factor (1 = solved, 2 = unsolved)
+
+data <- data %>%
+    mutate(Solved = factor(ifelse(Solved == "Yes", 2, 1),
+                         levels = c(1, 2),
+                         labels = c("Unsolved", "Solved")))
+
+# Recoding `VicSex` as a factor (1 = male, 2 = female, 3 = unknown)
+
+data <- data %>%
+  mutate(VicSex = factor(
+    case_when(
+      VicSex == "Male" ~ 1,
+      VicSex == "Female" ~ 2,
+      VicSex == "Unknown" ~ 3),
+    levels = c(1, 2, 3),
+    labels = c("Male", "Female", "Unknown")
+  ))
+
+# Recoding `VicRace` as a factor (1 = Asian or Pacific Islander, 2 = Black, 3 = American Indian or Alaskan Native, 4 = White, 5 = Unknown)
+
+data <- data %>%
+  mutate(VicRace = factor(
+    case_when(
+      VicRace == "Asian" ~ 1,
+      VicRace == "Black" ~ 2,
+      VicRace == "American Indian or Alaskan Native" ~ 3,
+      VicRace == "White" ~ 4,
+      VicRace == "Unknown" ~ 5),
+    levels = c(1, 2, 3, 4, 5),
+    labels = c("Asian or Pacific Islander", "Black", "American Indian or Alaskan Native", "White", "Unknown")
+  ))
+
+# Recoding `VicEthnic` as a factor (1 = Hispanic Origin, 2 = Not Hispanic, 3 = Unknown or Not Reported)
+
+data <- data %>%
+  mutate(VicEthnic = factor(
+    case_when(
+      VicEthnic == "Hispanic origin" ~ 1,
+      VicEthnic == "Not of Hispanic origin" ~ 2,
+      VicEthnic == "Unknown or not reported" ~ 3),
+    levels = c(1, 2, 3),
+    labels = c("Hispanic", "Not Hispanic", "Unknown or not reported")
+  ))
+
+# Recoding `OffSex` as a factor (1 = male, 2 = female, 3 = unknown)
+
+data <- data %>%
+  mutate(OffSex = factor(
+    case_when(
+      OffSex == "Male" ~ 1,
+      OffSex == "Female" ~ 2,
+      OffSex == "Unknown" ~ 3),
+    levels = c(1, 2, 3),
+    labels = c("Male", "Female", "Unknown")
+  ))
+
+# Recoding `OffRace` as a factor (1 = Asian or Pacific Islander, 2 = Black, 3 = American Indian or Alaskan Native, 4 = White, 5 = Unknown)
+
+data <- data %>%
+  mutate(OffRace = factor(
+    case_when(
+      OffRace == "Asian" ~ 1,
+      OffRace == "Black" ~ 2,
+      OffRace == "American Indian or Alaskan Native" ~ 3,
+      OffRace == "White" ~ 4,
+      OffRace == "Unknown" ~ 5),
+    levels = c(1, 2, 3, 4, 5),
+    labels = c("Asian or Pacific Islander", "Black", "American Indian or Alaskan Native", "White", "Unknown")
+  ))
+
+# Recoding `OffEthnic` as a factor (1 = Hispanic Origin, 2 = Not Hispanic, 3 = Unknown or Not Reported)
+
+data <- data %>%
+  mutate(OffEthnic = factor(
+    case_when(
+      OffEthnic == "Hispanic origin" ~ 1,
+      OffEthnic == "Not of Hispanic origin" ~ 2,
+      OffEthnic == "Unknown or not reported" ~ 3),
+    levels = c(1, 2, 3),
+    labels = c("Hispanic", "Not Hispanic", "Unknown or not reported")
+  ))
+
+# Recoding `Relationship` as a factor
+
+data <- data %>%
+  mutate(Relationship = factor(Relationship))
+
+# Recoding `Circumstance` as a factor
+
+data <- data %>%
+  mutate(Circumstance = factor(Circumstance))
+
+# Recoding `Weapon` as a factor
+data <- data %>%
+  mutate(Weapon = factor(Weapon))
+
+# Recoding `Month` as a factor (e.g., "January" = 1, "February" = 2, etc.)
+month_levels <- c(
+  "January", "February", "March", "April", "May", "June", 
+  "July", "August", "September", "October", "November", "December"
+)
+
+data <- data %>%
+    mutate(Month = factor(Month, levels = month_levels))
+
+# Recoding `State` as a factor
+
+data <- data %>%
+  mutate(State = factor(State))
+
+# Recoding `Agentype` as a factor 
+
+data <- data %>%
+  mutate(Agentype = factor(Agentype))
+```
+
+### Changing `OffCount` and `VicCount` Variables
+
+Currently, `OffCount` and `VicCount` represent additional offenders/victims (i.e., beyond those reported in columns such as `OffAge`/`VicAge`). I believe that these columns would be more helpful if they represented the total number of offenders/victims associated with a case.
+
+```{r variable revision}
+# Adding + 1 to each observation of `OffCount` and `VicCount` so that they represent *total* number of offenders/victims in case
+
+data <- data %>%
+  mutate(OffCount = OffCount + 1,
+         VicCount = VicCount + 1)
+```
+
+### Addressing Missing Data
+
+Missing data is a particularly interesting issue in this dataset. This is because officers are presumably required to complete incident reports to the best of their ability. Therefore, data that may be missing is due to a lack of information that is caused by the circumstances of the crime. For instance, missing data for `VicAge` (i.e., the victim's age) is likely due to the fact that the victim was unidentified. This could be due to the fact that the individual was a transient and was unable to be identified by a third party. It could also be due to the fact that the state of the remains of the victim prevented law enforcement officials from identifying the individual in question (and thus knowing the age of the victim). Another example would be missing values for `OffAge`. If the values are missing, this indicates that the offender was not identified at the time of the report (as indicated in the data manual). In sum, there are structural, systematic reasons for missing data.
+
+All of this is to say that missing data may have *meaning*, and would thus be categorized as Missing Not at Random. Thus, imputation is likely to be inappropriate, as it masks real, systematic reasons for the failure to provide data in these fields. Indeed, it is not hard to imagine scenarios in which the fact that particular data is missing may be predictive of whether a case is solved. As such, a different approach was taken to the issue of missing data. For categorical variables, missing data (indicated by NAs) were sorted into a new `Missing` factor level. For numerical variables, a separate binary variable was created to indicate if a case report was missing relevant information on the variable (0 = not missing data; 1 = missing data). `NA` values were recoded as `-1` to ensure that there were no missing values for analysis.
+
+```{r missing data}
+# addressing the issue for `VicAge` by creating a separate binary variable (1 = reported; 2 = did not report) using the ifelse function - when an observation for data$VicAge is NA, it is coded as 1. Otherwise, it is coded as 0
+
+data$VicAge_Missing <- ifelse(is.na(data$VicAge), 2, 1)
+
+# Convert `Vic Age_Missing` to a factor with labels
+data$VicAge_Missing <- factor(data$VicAge_Missing, 
+                               levels = c(1, 2), 
+                               labels = c("Not Missing", "Missing")
+                              )
+
+# transforming `NA` values to `-1` for VicAge
+
+data$VicAge <- ifelse(is.na(data$VicAge), -1, data$VicAge)
+
+# addressing the issue for `VicRace`  by adding a "Missing" factor level and assigning `NA` values to this factor level
+
+levels(data$VicRace) <- c(levels(data$VicRace), "Missing") # adding new factor level
+data$VicRace[is.na(data$VicRace)] <- "Missing" # subsetting data which is `NA` and assigning it to the `Missing` level
+
+# Creating a separate binary variable for `OffAge`
+
+data$OffAge_Missing <- ifelse(is.na(data$OffAge), 2, 1)
+
+# Convert `OffAge_Missing` to a factor with labels
+data$OffAge_Missing <- factor(data$OffAge_Missing, 
+                               levels = c(1, 2), 
+                               labels = c("Not Missing", "Missing")
+                              )
+
+# transforming `NA` values to `-1` for OffAge
+
+data$OffAge <- ifelse(is.na(data$OffAge), -1, data$OffAge)
+
+# Adding a new `Missing` level for `OffRace`
+
+levels(data$OffRace) <- c(levels(data$OffRace), "Missing")
+data$OffRace[is.na(data$OffRace)] <- "Missing"
+```
+
+## Exploratory Data Analysis
+
+### Descriptive Statistics
+
+#### `Solved`
+
+```{r descriptives solved}
+# creating function to simplify future summary table generation
+custom_summary_table <- function(data, group_var, title, col_label, sort = FALSE, sort_desc = TRUE) {
+  data %>%
+    group_by(across({{ group_var }})) %>%  # grouping by variable - using `across` allows for selection of one or more variables. Using {{}} ensures that columns are referenced rather than strings or objects
+    summarise(
+      Count = n(),  # Count cases for each level
+      Percentage = n() / nrow(data)  # Calculate proportion of cases for each level
+    ) %>% 
+    { # creating function for arranging the data by count (in some cases, this helps readability and discerning whether a level of a factor is relevant)
+      if (sort) {
+        if (sort_desc) {
+          arrange(., desc(Count))  # Sort by Count in descending order
+        } else {
+          arrange(., Count)  # Sort by Count in ascending order
+        }
+      } else {
+        .  # keep the original order of factors
+      } 
+    } %>%
+    gt() %>% # using the gt function to create professional table
+    tab_header(
+      title = title  # Use inputted title from argument
+    ) %>%
+    cols_label(
+      {{ group_var }} := col_label  # Use inputted column label from argument - this is for renaming any columns that may not fit well in the table (e.g., So)
+    ) %>%
+    fmt_percent(
+      columns = Percentage, # selecting proportion column
+      decimals = 2 # setting decimal places to 2
+    ) %>%
+    tab_options(
+    table.border.top.color = "white", # hiding top border
+    heading.title.font.size = px(16), # matching title and body font size
+    column_labels.border.top.width = 3, # making borders apa 7
+    column_labels.border.top.color = "black", 
+    column_labels.border.bottom.width = 3,
+    column_labels.border.bottom.color = "black",
+    table_body.border.bottom.color = "black",
+    table.border.bottom.color = "white",  # hide the bottom-most line or footnotes will have a border
+    table.width = pct(100), # maximizing width to fit page
+    table.background.color = "white" # making background white
+  ) %>%
+    cols_align(align="center") %>%
+    tab_header(
+    title = html("<i>", title, "</i>") # italicing table title
+  ) %>%
+  opt_align_table_header(align = "left") %>% # aligning the title to the left-hand side
+    tab_style(
+    style = list(
+      cell_borders(
+        sides = c("top", "bottom"), # removing all body borders (APA 7 style)
+        color = "white",
+        weight = px(1)
+      ),
+      cell_text(
+        align="center"
+      ),
+      cell_fill(color = "white", alpha = NULL)
+      ),
+    locations = cells_body(
+      columns = everything(),
+      rows = everything() # applying to all cells
+    ))
+}
+
+custom_summary_table(
+  data = data,
+  group_var = Solved,
+  title = "Summary of Solved Cases",
+  col_label = "Case Status"
+)
+```
+
+#### `VicAge`
+
+```{r descriptives vicage}
+# creating function to simplify future descriptives table generation
+custom_descriptives_table <- function(data, title) { # Creating a custom function so I don't have to copy-paste formatting
+  data %>%
+    gt() %>%
+    tab_header(
+      title = title # matching title to argument
+    ) %>%
+    cols_label(
+      mean = "M", # renaming default names from `describe()` to more traditional APA 7 formatting (e.g., mean to *M*)
+      sd = "SD",
+      median = "Mdn",
+      mad = "MAD",
+      min = "Min",
+      max = "Max",
+      skew = "Skew",
+      kurtosis = "Kurtosis",
+      se = "SE"
+    ) %>%
+    tab_header(
+      title = html("<i>", title, "</i>") # Italicize title
+    ) %>%
+    tab_style(
+      style = cell_text(style = "italic"), # Italicize select column labels
+      locations = cells_column_labels(everything())
+    ) %>%
+    fmt_number(
+      columns = c(mean, sd, mad, skew, kurtosis, se), # Format numeric columns except "n"
+      decimals = 2
+    ) %>%
+    tab_options(
+      table.border.top.color = "white", # Hide top border
+      heading.title.font.size = px(16), # Match title and body font size
+      column_labels.border.top.width = 3,
+      column_labels.border.top.color = "black",
+      column_labels.border.bottom.width = 3,
+      column_labels.border.bottom.color = "black",
+      table_body.border.bottom.color = "black",
+      table.border.bottom.color = "white", # Hide bottom-most line
+      table.width = pct(100), # Maximize width
+      table.background.color = "white" # White background
+    ) %>%
+    cols_align(align = "center") %>% # Center align all columns
+    opt_align_table_header(align = "left") # Left align table header
+}
+
+describe(data$VicAge) %>% # using the describe function from the psych package to generate descriptives
+  select(-c(vars, trimmed, range)) %>% # dropping vars and trimmed columns and piping descriptives from psych to gt
+  custom_descriptives_table(
+  title = "Descriptive Statistics for Victim Age"
+  )
+```
+
+#### `VicAge` by `Solved`
+
+```{r descriptives vicage by solved}
+custom_descriptives_table_by_group <- function(data, title) { # Creating a custom function so I don't have to copy-paste formatting
+  data %>%
+    gt() %>%
+    tab_header(
+      title = title # matching title to argument
+    ) %>%
+    cols_label(
+      group1 = "",
+      mean = "M", # renaming default names from `describe()` to more traditional APA 7 formatting (e.g., mean to *M*)
+      sd = "SD",
+      median = "Mdn",
+      mad = "MAD",
+      min = "Min",
+      max = "Max",
+      skew = "Skew",
+      kurtosis = "Kurtosis",
+      se = "SE"
+    ) %>%
+    tab_header(
+      title = html("<i>", title, "</i>") # Italicize title
+    ) %>%
+    tab_style(
+      style = cell_text(style = "italic"), # Italicize select column labels
+      locations = cells_column_labels(everything())
+    ) %>%
+    fmt_number(
+      columns = c(mean, sd, mad, skew, kurtosis, se), # Format numeric columns where appropriate
+      decimals = 2
+    ) %>%
+    tab_options(
+      table.border.top.color = "white", # Hide top border
+      heading.title.font.size = px(16), # Match title and body font size
+      column_labels.border.top.width = 3,
+      column_labels.border.top.color = "black",
+      column_labels.border.bottom.width = 3,
+      column_labels.border.bottom.color = "black",
+      table_body.border.bottom.color = "black",
+      table.border.bottom.color = "white", # Hide bottom-most line
+      table.width = pct(100), # Maximize width
+      table.background.color = "white" # White background
+    ) %>%
+    cols_align(align = "center") %>% # Center align all columns
+    opt_align_table_header(align = "left") # Left align table header
+}
+
+describeBy(data$VicAge, group = data$Solved, mat = TRUE) %>%
+  select(-c(item, vars, trimmed, range)) %>%
+  custom_descriptives_table_by_group(
+    title = "Descriptive Statistics for Victim Age by Case Status"
+  ) 
+```
+
+#### `VicSex`
+
+```{r descriptives vicsex}
+custom_summary_table(
+  data = data,
+  group_var = VicSex,
+  title = "Summary of Victim Sex",
+  col_label = "Victim Sex",
+)
+```
+
+#### `VicSex` by `Solved`
+
+```{r descriptives vicsex by solved}
+# making custom function for creating proportion table by groups
+custom_summary_table_pivoted <- function(data, group_var, col_var, title, row_label, sort_by_solved = FALSE, sort_desc = TRUE) {
+  summary_table <- data %>%
+    group_by(across({{ group_var }}), across({{ col_var }})) %>% # group by both levels
+    summarise(
+      Count = n(), # calculate count
+      .groups = "drop" # dropping groups
+    ) %>%
+    group_by(across({{ col_var }})) %>% # explicitly peeling back to
+    mutate(
+      Proportion = Count / sum(Count)  # Calculating proportions
+    ) %>%
+    ungroup() %>% # ungrouping before pivoting
+    select(-Count) %>%  # Removing the Count column
+    pivot_wider(
+      names_from = {{ col_var }},  # Pivot col_var levels into separate columns
+      values_from = Proportion
+    ) %>%
+    { # Optional sorting by "Solved" as it is the first column
+      if (sort_by_solved) {
+        if (sort_desc) {
+          arrange(., desc(Solved))
+        } else {
+          arrange(., Solved)
+        }
+      } else {
+        .
+      }
+    }
+  summary_table %>%
+    gt() %>%
+    tab_header(
+      title = title
+    ) %>%
+    cols_label(
+      {{ group_var }} := row_label  # Rename row label
+    ) %>%
+    fmt_percent(
+      columns = where(is.numeric),  # Format all numeric columns as percentages
+      decimals = 2
+    ) %>%
+    tab_options(
+      table.border.top.color = "white",
+      heading.title.font.size = px(16),
+      column_labels.border.top.width = 3,
+      column_labels.border.top.color = "black", 
+      column_labels.border.bottom.width = 3,
+      column_labels.border.bottom.color = "black",
+      table_body.border.bottom.color = "black",
+      table.border.bottom.color = "white",
+      table.width = pct(100),
+      table.background.color = "white"
+    ) %>%
+    cols_align(align = "center") %>%
+    tab_header(
+      title = html("<i>", title, "</i>")
+    ) %>%
+    opt_align_table_header(align = "left") %>%
+    tab_style(
+      style = list(
+        cell_borders(
+          sides = c("top", "bottom"),
+          color = "white",
+          weight = px(1)
+        ),
+        cell_text(
+          align = "center"
+        ),
+        cell_fill(color = "white", alpha = NULL)
+      ),
+      locations = cells_body(
+        columns = everything(),
+        rows = everything()
+      )
+    )
+}
+
+custom_summary_table_pivoted(
+  data = data,
+  group_var = VicSex,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Victim Sex",
+  row_label = "Victim Sex"
+)
+```
+
+#### `VicRace`
+
+```{r descriptives vicrace}
+custom_summary_table(
+  data = data,
+  group_var = VicRace,
+  title = "Summary of Victim Race",
+  col_label = "Victim Race",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `VicRace` by `Solved`
+
+```{r descriptives vicrace by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = VicRace,
+  col_var = Solved,
+  title = "Percentage of Solved and Unsolved Cases by Victim Race",
+  row_label = "Victim Race",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `VicEthnic`
+
+```{r descriptives vicethnic}
+custom_summary_table(
+  data = data,
+  group_var = VicEthnic,
+  title = "Summary of Victim Ethnicity",
+  col_label = "Victim Ethnicity",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `VicRace` by `Solved`
+
+```{r descriptives vicethnic by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = VicEthnic,
+  col_var = Solved,
+  title = "Percentage of Solved and Unsolved Cases by Victim Ethnicity",
+  row_label = "Victim Ethnicity",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `OffAge`
+
+```{r descriptives offage}
+describe(data$OffAge) %>% 
+  select(-c(vars, trimmed, range)) %>%
+  custom_descriptives_table(
+  title = "Descriptive Statistics for Offender Age"
+  )
+```
+
+#### `OffAge` by `Solved`
+
+```{r descriptives offage by solved}
+describeBy(data$OffAge, group = data$Solved, mat = TRUE) %>%
+  select(-c(item, vars, trimmed, range)) %>%
+  custom_descriptives_table_by_group(
+    title = "Descriptive Statistics for Offender Age by Case Status"
+  ) 
+```
+
+#### `OffSex`
+
+```{r descriptives offsex}
+custom_summary_table(
+  data = data,
+  group_var = OffSex,
+  title = "Summary of Offender Sex",
+  col_label = "Offender Sex"
+)
+```
+
+#### `OffSex` by `Solved`
+
+```{r descriptives offsex by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = OffSex,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Offender Sex",
+  row_label = "Offender Sex",
+)
+```
+
+#### `OffRace`
+
+```{r descriptives offrace}
+custom_summary_table(
+  data = data,
+  group_var = OffRace,
+  title = "Summary of Offender Race",
+  col_label = "Offender Race",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `OffRace` by `Solved`
+
+```{r descriptives offrace by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = OffRace,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Offender Race",
+  row_label = "Offender Race",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `OffEthnic`
+
+```{r descriptives offethnic}
+custom_summary_table(
+  data = data,
+  group_var = OffEthnic,
+  title = "Summary of Offender Ethnicity",
+  col_label = "Offender Ethnicity",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `OffEthnic` by `Solved`
+
+```{r descriptives offethnic by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = OffEthnic,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Offender Ethnicity",
+  row_label = "Offender Ethnicity",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `Relationship`
+
+```{r descriptives relationship}
+custom_summary_table(
+  data = data,
+  group_var = Relationship,
+  title = "Summary of Victim-Offender Relationship",
+  col_label = "Victim-Offender Relationship",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `Relationship` by `Solved`
+
+```{r descriptives relationship by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = Relationship,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Victim-Offender Relationship",
+  row_label = "Victim-Offender Relationship",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `Circumstance`
+
+```{r descriptives circumstance}
+custom_summary_table(
+  data = data,
+  group_var = Circumstance,
+  title = "Summary of Homicide Circumstance",
+  col_label = "Homicide Circumstance",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `Circumstance` by `Solved`
+
+```{r descriptives circumstance by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = Circumstance,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Homicide Circumstance",
+  row_label = "Circumstance",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `Weapon`
+
+```{r descriptives weapon}
+custom_summary_table(
+  data = data,
+  group_var = Weapon,
+  title = "Summary of Homicide Weapon",
+  col_label = "Homicide Weapon",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `Weapon` by `Solved`
+
+```{r descriptives weapon by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = Weapon,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Murder Weapon",
+  row_label = "Weapon",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `OffCount`
+
+```{r descriptives offcount}
+describe(data$OffCount) %>% 
+  select(-c(vars, trimmed, range)) %>%
+  custom_descriptives_table(
+  title = "Descriptive Statistics for Number of Offenders"
+  )
+```
+
+#### `OffCount` by `Solved`
+
+```{r descriptives offcount by solved}
+describeBy(data$OffCount, group = data$Solved, mat = TRUE) %>%
+  select(-c(item, vars, trimmed, range)) %>%
+  custom_descriptives_table_by_group(
+    title = "Descriptive Statistics for Offender Count by Case Status"
+  )
+```
+
+#### `VicCount`
+
+```{r descriptives viccount}
+describe(data$VicCount) %>% 
+  select(-c(vars, trimmed, range)) %>%
+  custom_descriptives_table(
+  title = "Descriptive Statistics for Number of Victims"
+  )
+```
+
+#### `VicCount` by \`Solved
+
+```{r descriptives viccount by solved}
+describeBy(data$VicCount, group = data$Solved, mat = TRUE) %>%
+  select(-c(item, vars, trimmed, range)) %>%
+  custom_descriptives_table_by_group(
+    title = "Descriptive Statistics for Victim Count by Case Status"
+  ) 
+```
+
+#### `Year`
+
+```{r descriptives year}
+custom_summary_table(
+  data = data,
+  group_var = Year,
+  title = "Summary of Homicides by Year",
+  col_label = "Year",
+)
+```
+
+#### `Year` by `Solved`
+
+```{r descriptives year by solved}
+data_year <- data %>%
+  mutate(Year = factor(Year))
+
+# Calculate the percentage of solved and unsolved homicides within each year
+year_solved_summary <- data_year %>%
+  group_by(Year, Solved) %>%  # Group by Year and Solved
+  summarise(
+    Count = n(),  # Count cases for each combination of Year and Solved
+    .groups = "drop"
+  ) %>%
+  group_by(Year) %>%  # Group by Year to calculate percentages within each year
+  mutate(
+    Percentage = Count / sum(Count)  # Calculate percentage of each status within the year
+  ) %>%
+  ungroup() %>%
+  select(-Count) %>%  # Remove Count column to focus on percentages
+  pivot_wider(
+    names_from = Solved,  # Pivot the Solved column into separate columns
+    values_from = Percentage
+  )
+
+year_solved_summary %>%
+  gt() %>%
+  tab_header(
+    title = html("<i>Percentage of Solved vs. Unsolved Homicides by Year</i>")
+  ) %>%
+  cols_label(
+    Year = "Year",  # Rename Year column
+    Solved = "Solved (%)",
+    Unsolved = "Unsolved (%)"
+  ) %>%
+  fmt_percent(
+    columns = where(is.numeric),  # Format percentage columns
+    decimals = 2
+  ) %>%
+  tab_options(
+    table.border.top.color = "white",
+    heading.title.font.size = px(16),
+    column_labels.border.top.width = 3,
+    column_labels.border.top.color = "black", 
+    column_labels.border.bottom.width = 3,
+    column_labels.border.bottom.color = "black",
+    table_body.border.bottom.color = "black",
+    table.border.bottom.color = "white",
+    table.width = pct(100),
+    table.background.color = "white"
+  ) %>%
+  cols_align(align = "center") %>%
+  opt_align_table_header(align = "left")
+```
+
+#### `Month`
+
+```{r descriptives month}
+custom_summary_table(
+  data = data,
+  group_var = Month,
+  title = "Summary of Homicides by Month",
+  col_label = "Month",
+)
+```
+
+#### `Month` by `Solved`
+
+```{r descriptives month by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = Month,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Month",
+  row_label = "Month",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `State`
+
+```{r descriptives state}
+custom_summary_table(
+  data = data,
+  group_var = State,
+  title = "Summary of Homicides by State",
+  col_label = "State",
+)
+```
+
+#### `State` by `Solved`
+
+```{r descriptives state by solved}
+# Calculate percentages of solved vs. unsolved homicides within each state
+state_summary <- data %>%
+  group_by(State, Solved) %>%
+  summarise(
+    Count = n(),
+    .groups = "drop"
+  ) %>%
+  group_by(State) %>% 
+  mutate(
+    Percentage = Count / sum(Count)
+  ) %>%
+  ungroup() %>%
+  select(-Count) %>%
+  pivot_wider(
+    names_from = Solved,
+    values_from = Percentage
+  )
+
+state_summary %>%
+  gt() %>%
+  tab_header(
+    title = html("<i>Percentage of Solved vs. Unsolved Homicides by State</i>")
+  ) %>%
+  cols_label(
+    Solved = "Solved (%)",
+    Unsolved = "Unsolved (%)"
+  ) %>%
+  fmt_percent(
+    columns = where(is.numeric),  # Format all numeric columns as percentages
+    decimals = 2
+  ) %>%
+  tab_options( # same formatting as before
+    table.border.top.color = "white",
+    heading.title.font.size = px(16),
+    column_labels.border.top.width = 3,
+    column_labels.border.top.color = "black", 
+    column_labels.border.bottom.width = 3,
+    column_labels.border.bottom.color = "black",
+    table_body.border.bottom.color = "black",
+    table.border.bottom.color = "white",
+    table.width = pct(100),
+    table.background.color = "white"
+  ) %>%
+  cols_align(align = "center") %>%
+  opt_align_table_header(align = "left")
+
+```
+
+#### `Agentype`
+
+```{r descriptives agentype}
+custom_summary_table(
+  data = data,
+  group_var = Agentype,
+  title = "Summary of Homicides by Reporting Agency",
+  col_label = "Reporting Agency",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `Agentype` by `Solved`
+
+```{r descriptives agentype by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = Agentype,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Reporting Agency",
+  row_label = "Agency",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `VicAge_Missing`
+
+```{r descriptives vicage_missing}
+custom_summary_table(
+  data = data,
+  group_var = VicAge_Missing,
+  title = "Summary of Missing Data for Victim Age",
+  col_label = "Victim Age",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `VicAge_Missing` by `Solved`
+
+```{r descriptives vicage_missing by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = VicAge_Missing,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Missing Data for Victim Age",
+  row_label = "Victim Age",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `OffAge_Missing`
+
+```{r descriptives offage_missing}
+custom_summary_table(
+  data = data,
+  group_var = OffAge_Missing,
+  title = "Summary of Missing Data for Offender Age",
+  col_label = "Offender Age",
+  sort = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### `OffAge_Missing` by `Solved`
+
+```{r descriptives offage_missing by solved}
+custom_summary_table_pivoted(
+  data = data,
+  group_var = OffAge_Missing,
+  col_var = Solved,
+  title = "Percentage of Solved vs. Unsolved Cases by Missing Data for Offender Age",
+  row_label = "Offender Age",
+  sort_by_solved = TRUE,
+  sort_desc = TRUE
+)
+```
+
+#### Correlations Between Numeric Variables and `Solved`
+
+I generated a series of point-biserial correlations between the numeric predictors in the data (e.g., `VicAge`) and `Solved` to examine the zero-order relationship between the two.
+
+```{r correlations}
+# subsetting data for correlations
+
+cor_data <- data %>%
+  select(c(VicAge, OffAge, OffCount, VicCount, Year, Solved)) %>%
+  mutate(Solved = as.numeric(data$Solved) - 1) # converting `Solved` from factor to numeric
+
+# correlation between `VicAge` and `Solved`
+
+cor.test(cor_data$VicAge, cor_data$Solved)
+
+# Correlation between `OffAge` and `Solved`
+
+cor.test(cor_data$OffAge, cor_data$Solved)
+
+# Correlation between `OffCount` and `Solved`
+
+cor.test(cor_data$OffCount, cor_data$Solved)
+
+# Correlation between `VicCount` and `Solved`
+
+cor.test(cor_data$VicCount, cor_data$Solved)
+
+# Correlation between `Year` and `Solved`
+
+cor.test(cor_data$Year, cor_data$Solved)
+```
+
+### Visualizations
+
+#### `Solved`
+
+```{r bar plot solved, warning=FALSE, message=FALSE}
+# loading times new roman as a font style
+
+loadfonts(device="win")
+windowsFonts(Times=windowsFont("TT Times New Roman"))
+
+# creating global apa 7 style theme
+apa_theme <- theme_minimal(base_size = 12) +
+  theme(
+    text = element_text(family = 'Times New Roman'),  # APA compliant font
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),  # Bold, center-aligned title
+    plot.subtitle = element_text(size = 12, hjust = 0.5),  # Center-aligned subtitle
+    axis.title.x = element_text(size = 12, margin = margin(t = 10)),  # Add space above x-axis title
+    axis.title.y = element_text(size = 12, margin = margin(r = 10)),  # Add space beside y-axis title
+    axis.text = element_text(size = 10),  # Slightly smaller axis text
+    panel.grid.major = element_blank(),  # Subtle gridlines
+    panel.grid.minor = element_blank(),  # Remove minor gridlines
+    plot.margin = margin(20, 20, 20, 20), # Add padding around plot
+    plot.caption = element_text(size = 12, hjust = 0, margin = margin(t = 10)), # left-align caption and make size 10
+  )
+
+# Apply the theme 
+theme_set(apa_theme)
+
+# Creating custom colour palette
+custom_palette <- c(
+  "#4E79A7", # Blue
+  "#F28E2B", # Orange
+  "#E15759", # Red
+  "#76B7B2", # Teal
+  "#59A14F", # Green
+  "#EDC948", # Yellow
+  "#B07AA1", # Purple
+  "#FF9DA7", # Pink
+  "#9C755F", # Brown
+  "#BAB0AC"  # Gray
+)
+
+# defining custom fill and colour palettes in ggplot
+scale_fill_custom <- scale_fill_manual(values = custom_palette)
+scale_color_custom <- scale_color_manual(values = custom_palette)
+
+# creating summary data for ggplot
+data_solved <- data %>%
+  group_by(Solved) %>% # grouping data by case status (i.e., solved vs. unsolved)
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>% # summarizing data in terms of relative proportions 
+  mutate(Solved = fct_reorder(Solved, Proportion, .desc = TRUE)) # reordering factor levels so that the bar plot is shown in descending order by proportion
+
+# creating bar plot for Solved
+ggplot(data_solved, aes(x = Solved, y = Proportion, fill = Solved)) +
+  geom_bar(stat = "identity") + # using identity statistic so that proportion is called
+  scale_fill_custom + # using custom palette
+  scale_y_continuous(labels = scales::percent) + # ensuring that scales are in percentages
+  labs(title = "Solved vs. Unsolved Homicides", # labelling title, axes, and caption
+       x = "Case Status",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `VicAge`
+
+```{r histogram vicage, warning=FALSE}
+ggplot(data, aes(VicAge)) +
+  geom_histogram(binwidth = 5, fill = "#4E79A7", color = "black") + # to keep a consistent colour palette
+  labs(title = "Age of Homicide Victims",
+       x = "Victim Age",
+       y = "Count",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024")))
+```
+
+#### `VicAge` by `Solved`
+
+```{r histogram vicage facet, warning=FALSE}
+ggplot(data, aes(VicAge)) +
+  geom_histogram(binwidth = 5, fill = "#4E79A7", color = "black") +
+  facet_wrap(~ Solved) +
+  labs(title = "Age of Victim Homicide Victims (Solved vs. Unsolved)",
+       x = "Victim Age",
+       y = "Count",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024")))
+```
+
+#### `VicSex`
+
+```{r bar plot vicsex}
+data_vic_sex <- data %>%
+  group_by(VicSex) %>%
+  summarise(Proportion = n() / nrow(data), .groups = "drop") %>%
+  mutate(VicSex = fct_reorder(VicSex, Proportion, .desc = TRUE))
+
+ggplot(data_vic_sex, aes(x = VicSex, y = Proportion, fill = VicSex)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Victim Sex in Homicides",
+       x = "Victim Sex",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024")))
+```
+
+#### `VicSex` by `Solved`
+
+```{r bar plot vicsex by solved}
+data_vic_sex <- data %>%
+  group_by(Solved, VicSex) %>%
+  summarise(Count = n(), .groups = "drop") %>% # calculating count and ungrouping
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count))  # Proportions within each Solved group
+  
+ggplot(data_vic_sex, aes(x = Solved, y = Proportion, fill = VicSex)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +  
+  scale_y_continuous(labels = scales::percent) +  # Format y-axis as percentages
+  labs(
+    title = "Victim Sex in Solved vs. Unsolved Homicides",
+    x = "Case Status",
+    y = "Percentage of Cases",
+    fill = "Victim Sex",
+    caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+  ) +
+  scale_fill_custom
+```
+
+#### `VicRace`
+
+```{r bar plot vicrace}
+data_vic_race <- data %>%
+  group_by(VicRace) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(VicRace = fct_reorder(VicRace, Proportion, .desc = TRUE))
+
+ggplot(data_vic_race, aes(x = VicRace, y = Proportion, fill = VicRace)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Race of Homicide Victims",
+       x = "Victim Race",
+       y = "Percentage of Cases",
+       fill = "Victim Race",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `VicRace` by `Solved`
+
+```{r bar plot vicrace by solved}
+data_vic_race <- data %>%
+  group_by(Solved, VicRace) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         VicRace = fct_reorder(VicRace, Proportion, .desc = TRUE))
+
+ggplot(data_vic_race, aes(x = Solved, y = Proportion, fill = VicRace)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Race of Homicide Victim in Solved vs. Unsolved Cases",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Victim Race",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) 
+```
+
+#### `VicEthnic`
+
+```{r bar plot vicethnic}
+data_vic_ethnic <- data %>%
+  group_by(VicEthnic) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(VicRace = fct_reorder(VicEthnic, Proportion, .desc = TRUE))
+
+ggplot(data_vic_ethnic, aes(x = VicEthnic, y = Proportion, fill = VicEthnic)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Ethnicity of Homicide Victims",
+       x = "Victim Ethnicity",
+       y = "Percentage of Cases",
+       fill = "Victim Ethnicity",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `VicRace` by `Solved`
+
+```{r bar plot vicethnic by solved}
+data_vic_ethnic <- data %>%
+  group_by(Solved, VicEthnic) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         VicEthnic = fct_reorder(VicEthnic, Proportion, .desc = TRUE))
+
+ggplot(data_vic_ethnic, aes(x = Solved, y = Proportion, fill = VicEthnic)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Ethnicity of Homicide Victim in Solved vs. Unsolved Cases",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Victim Ethnicity",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) 
+```
+
+#### `OffAge`
+
+```{r histogram offage, warning=FALSE}
+ggplot(data, aes(OffAge)) +
+  geom_histogram(binwidth = 5, fill = "#4E79A7", color = "black") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Age of Offender in Homicides in the United States",
+       x = "Offender Age",
+       y = "Count",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024")))
+```
+
+#### `OffAge` by `Solved`
+
+```{r histogram offage facet, warning=FALSE}
+ggplot(data, aes(OffAge)) +
+  geom_histogram(binwidth = 5, fill = "#4E79A7", color = "black") +
+  facet_wrap(~ Solved, scales = "free_y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Age of Offender in Solved vs. Unsolved Homicides in the United States",
+       x = "Offender Age",
+       y = "Count",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `OffSex`
+
+```{r bar plot offsex}
+data_off_sex <- data %>%
+  group_by(OffSex) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(OffSex = fct_reorder(OffSex, Proportion, .desc = TRUE))
+
+ggplot(data_off_sex, aes(x = OffSex, y = Proportion, fill = OffSex)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), show.legend = FALSE) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Offender Sex in Homicides",
+       x = "Offender Sex",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `OffSex` by `Solved`
+
+```{r bar plot offsex by solved}
+data_off_sex <- data %>%
+  group_by(Solved, OffSex) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         OffSex = fct_reorder(OffSex, Proportion, .desc = TRUE))
+
+ggplot(data_off_sex, aes(x = Solved, y = Proportion, fill = OffSex)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Offender Sex in Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Offender Sex",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `OffRace`
+
+```{r bar plot offrace}
+data_off_race <- data %>%
+  group_by(OffRace) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(OffRace = fct_reorder(OffRace, Proportion, .desc = TRUE))
+
+ggplot(data_off_race, aes(x = OffRace, y = Proportion, fill = OffRace)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), show.legend = FALSE) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Offender Race in Homicides in the United States",
+       x = "Offender Race",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       ) +
+  theme(axis.text.x = element_blank())
+```
+
+#### `OffRace` by `Solved`
+
+```{r bar plot offrace by solved}
+data_off_race <- data %>%
+  group_by(Solved, OffRace) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         OffRace = fct_reorder(OffRace, Proportion, .desc = TRUE))
+
+ggplot(data_off_race, aes(x = Solved, y = Proportion, fill = OffRace)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Offender Race in Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Offender Race",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `OffEthnic`
+
+```{r bar plot offethnic}
+data_off_ethnic <- data %>%
+  group_by(OffEthnic) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(OffEthnic = fct_reorder(OffEthnic, Proportion, .desc = TRUE))
+
+ggplot(data_off_ethnic, aes(x = OffEthnic, y = Proportion, fill = OffEthnic)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Ethnicity of Homicide Offenders",
+       x = "Offender Ethnicity",
+       y = "Percentage of Cases",
+       fill = "Offender Ethnicity",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `OffEthnic` by `Solved`
+
+```{r bar plot offethnic by solved}
+data_off_ethnic <- data %>%
+  group_by(Solved, OffEthnic) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         OffEthnic = fct_reorder(OffEthnic, Proportion, .desc = TRUE))
+
+ggplot(data_off_ethnic, aes(x = Solved, y = Proportion, fill = OffEthnic)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Offender Ethnicity in Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Offender Ethnicity",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `Relationship`
+
+```{r bar plot relationship}
+# As there are variables with too many factors to plot in an easily interpretable manner, I will be retaining the top 5 most frequent levels for visualization
+
+data_relationship <- data %>%
+  group_by(Relationship) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(Relationship = fct_reorder(Relationship, Proportion, .desc = TRUE)) %>%
+  slice_max(Proportion, n = 5)
+
+ggplot(data_relationship, aes(x = Relationship, y = Proportion, fill = Relationship)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Victim-Offender Relationship in Homicides",
+       x = "Relationship",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       ) +
+  theme(axis.text.x = element_blank())
+```
+
+#### `Relationship` by `Solved`
+
+```{r bar plot relationship by solved}
+data_relationship <- data %>%
+  group_by(Solved, Relationship) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         Relationship = fct_reorder(Relationship, Proportion, .desc = TRUE)) %>%
+  slice_max(Proportion, n = 5) # keeping the top 5 for each level of Solved
+
+ggplot(data_relationship, aes(x = Solved, y = Proportion, fill = Relationship)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Victim-Offender Relationship in Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Relationship",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024")))
+```
+
+#### `Circumstance`
+
+```{r bar plot circumstance}
+data_circumstance <- data %>%
+  group_by(Circumstance) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(Circumstance = fct_reorder(Circumstance, Proportion, .desc = TRUE)) %>%
+  slice_max(Proportion, n = 5)
+
+ggplot(data_circumstance, aes(x = Circumstance, y = Proportion, fill = Circumstance)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Circumstance of Homicides",
+       x = "Circumstance",
+       y = "Percentage of Cases",
+       fill = "Circumstance",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `Circumstance` by `Solved`
+
+```{r bar plot circumstance by solved}
+data_circumstance <- data %>%
+  group_by(Solved, Circumstance) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         Circumstance = fct_reorder(Circumstance, Proportion, .desc = TRUE)) %>%
+  slice_max(Proportion, n = 5)
+
+ggplot(data_circumstance, aes(x = Solved, y = Proportion, fill = Circumstance)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Circumstances of Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Circumstance",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) 
+```
+
+#### `Weapon`
+
+```{r bar plot weapon}
+data_weapon <- data %>%
+  group_by(Weapon) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(Weapon = fct_reorder(Weapon, Proportion, .desc = TRUE)) %>%
+  slice_max(Proportion, n = 5)
+
+ggplot(data_weapon, aes(x = Weapon, y = Proportion, fill = Weapon)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Weapon Used in Homicides",
+       x = "Circumstance",
+       y = "Percentage of Cases",
+       fill = "Circumstance",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `Weapon` by `Solved`
+
+```{r bar plot weapon by solved}
+data_weapon <- data %>%
+  group_by(Solved, Weapon) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         Weapon = fct_reorder(Weapon, Proportion, .desc = TRUE)) %>%
+  slice_max(Proportion, n = 5)
+
+ggplot(data_weapon, aes(x = Solved, y = Proportion, fill = Weapon)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Race of Homicide Victim in Solved vs. Unsolved Cases",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Circumstance",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) 
+```
+
+#### `OffCount`
+
+```{r bar plot off count}
+data_off_count <- data %>%
+  group_by(OffCount) %>%
+  summarise(Proportion = n() / nrow(data), .groups = "drop") %>%
+  slice_max(Proportion, n = 5) # taking top 5 most frequent values for `OffCount` to visualize
+
+ggplot(data_off_count, aes(x = OffCount, y = Proportion)) + 
+  geom_bar(stat = "identity", fill = "#4E79A7") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Offender Count in Solved vs. Unsolved Homicides",
+       x = "Number of Offenders",
+       y = "Proportion of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `OffCount` by `Solved`
+
+```{r bar plot off count by solved}
+data_off_count <- data %>%
+  group_by(Solved, OffCount) %>% # grouping by solved and offender counts (binned)
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count)) %>%
+  slice_max(Proportion, n = 5)
+  
+ggplot(data_off_count, aes(x = OffCount, y = Proportion, fill = Solved)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  facet_wrap(~ Solved) + # using faceted plots instead of fill as it is easier to interpret visualization
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Offender Count in Solved vs. Unsolved Homicides",
+       x = "Number of Offenders",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `VicCount`
+
+```{r bar plot vic count}
+data_vic_count <- data %>%
+  group_by(VicCount) %>%
+  summarise(Proportion = n() / nrow(data), .groups = "drop") %>%
+  slice_max(Proportion, n = 5) 
+
+ggplot(data_vic_count, aes(x = VicCount, y = Proportion)) + 
+  geom_bar(stat = "identity", fill = "#4E79A7") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Victim Count in Homicides",
+       x = "Number of Victims",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `VicCount` by `Solved`
+
+```{r bar plot vic count by solved}
+data_vic_count <- data %>%
+  group_by(Solved, VicCount) %>% # grouping by solved and offender counts (binned)
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count)) %>%
+  slice_max(Proportion, n = 5)
+  
+ggplot(data_vic_count, aes(x = VicCount, y = Proportion, fill = Solved)) + 
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  facet_wrap(~ Solved) + # using faceted plots instead of fill as it is easier to interpret visualization
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Victim Count in Solved vs. Unsolved Homicides",
+       x = "Number of Victims",
+       y = "Percentage of Cases",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `Year`
+
+```{r line plot year}
+ggplot(data, aes(x = Year)) + 
+  geom_line(stat = "count", color = "#4E79A7", linewidth = 1.5) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Number of Homicides by Year",
+       x = "Year",
+       y = "Number of Homicides",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       ) 
+
+```
+
+#### `Year` by `Solved`
+
+```{r line plot year by solved}
+ggplot(data, aes(x = Year, color = Solved)) + 
+  geom_line(stat = "count", linewidth = 1.5) +
+  scale_color_custom +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Number of Solved vs. Unsolved Homicides by Year",
+       x = "Year",
+       y = "Number of Homicides",
+       color = "Case Status",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))
+       )
+```
+
+#### `State`
+
+```{r map state}
+# Using dplyr functions to create a separate dataframe with count data for each state (i.e., the number of observations per state)
+state_counts <- data %>%
+  count(State) %>%
+  mutate(State = tolower(State))  # making each state lower case, as the 'us_map' data from the 'maps' package has all states in lower case
+
+# Load US state map data
+state_map <- map_data("state") # loading dataset from the `maps` package with all states and their longitude, latitude
+
+# Merging state_map with state_counts
+map_data <- state_map %>%
+  left_join(state_counts, by = c("region" = "State")) # using a left join to merge the state_counts dataframe to the state_map dataframe
+
+# Plot the map
+ggplot(map_data, aes(long, lat, group = group, fill = n)) + # mapping the longitude and latitude to x and y parameters of the aesthetic. using state name as the grouping, with the fill aesthetic being matched to the number of observations (i.e., the number of homicide cases)
+  geom_polygon(color = "white") +
+  scale_fill_viridis_c(option = "plasma", name = "Number of Homicide Reports") + # using the viridis colour palette to progressively colour the states based on n
+  labs(
+    title = "Homicide Cases by State in the US (1976-2024)",
+    x = "",
+    y = "",
+    fill = "",
+    caption = "Source: US Homicide Data (1976-2024)." # adding explanatory caption for reader
+  ) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major = element_blank(), # removing axes for clear visualization
+    plot.caption = element_text(hjust = 0) # left-align caption
+  )
+```
+
+#### `State` for `Solved`
+
+```{r map state solved, warning=FALSE}
+# Instead of faceting solved vs. unsolved, I will be visualizing the proportion of solved cases to total cases for each state
+state_solved_proportion <- data %>%
+  group_by(State) %>% # using the `group()` verb to group data by state
+  summarise( # using the `summarise()` verb to create a dataset of calculated values
+    Total = n(), # calculating number of cases by state
+    Solved = sum(Solved == "Solved"), # calculating number of solved cases by state
+    ProportionSolved = Solved / Total # calculating the proportion of solved cases by state / total cases by state
+  ) %>%
+  mutate(State = tolower(State))
+
+map_data <- state_map %>%
+  left_join(state_solved_proportion, by = c("region" = "State"))
+
+ggplot(map_data, aes(long, lat, group = group, fill = ProportionSolved)) +
+  geom_polygon(color = "white") +
+  scale_fill_viridis_c(option = "plasma", name = "Percentage of Solved Cases", labels = scales::percent) + # using percentage scales rather than decimals for easier interpretation
+  labs(
+    title = "Percentage of Solved Homicide Cases by State",
+    x = "",
+    y = "",
+    caption = "Source: US Homicide Data (1976-2024).
+Percentages calculated as the number of solved cases divided by the total homicide cases 
+multiplied by 100 in each state." # adding explanatory caption for reader
+  ) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    panel.grid.major = element_blank(),
+    plot.caption = element_text(hjust = 0)
+  )
+```
+
+#### `Agentype`
+
+```{r bar plot agentype}
+data_agentype <- data %>%
+  group_by(Agentype) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(Agentype = fct_reorder(Agentype, Proportion, .desc = TRUE))
+
+ggplot(data_agentype, aes(x = Agentype, y = Proportion, fill = Agentype)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Reporting Agency for Homicides",
+       x = "Agency",
+       y = "Percentage of Cases",
+       fill = "Agency",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `Agentype` by `Solved`
+
+```{r bar plot agentype by solved}
+data_agentype <- data %>%
+  group_by(Solved, Agentype) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         Agentype = fct_reorder(Agentype, Proportion, .desc = TRUE))
+
+ggplot(data_agentype, aes(x = Solved, y = Proportion, fill = Agentype)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Reporting Agency in Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Agency",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) 
+```
+
+#### `VicAge_Missing`
+
+```{r bar plot vicage_missing}
+data_vicage_missing <- data %>%
+  group_by(VicAge_Missing) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(VicAge_Missing = fct_reorder(VicAge_Missing, Proportion, .desc = TRUE))
+
+ggplot(data_vicage_missing, aes(x = VicAge_Missing, y = Proportion, fill = VicAge_Missing)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Missing Data for Victim Age in Homicide Reports ",
+       x = "Victim Age",
+       y = "Percentage of Cases",
+       fill = "Victim Age",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `VicAge_Missing` by `Solved`
+
+```{r bar plot vicage_missing by solved}
+data_vicage_missing <- data %>%
+  group_by(Solved, VicAge_Missing) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         VicAge_Missing = fct_reorder(VicAge_Missing, Proportion, .desc = TRUE))
+
+ggplot(data_vicage_missing, aes(x = Solved, y = Proportion, fill = VicAge_Missing)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Missing Data for Victim Age in Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Victim Age",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) 
+```
+
+#### `OffAge_Missing`
+
+```{r bar plot offage_missing}
+data_offage_missing <- data %>%
+  group_by(OffAge_Missing) %>%
+  summarise(Proportion = n()/nrow(data), .groups = "drop") %>%
+  mutate(OffAge_Missing = fct_reorder(OffAge_Missing, Proportion, .desc = TRUE))
+
+ggplot(data_offage_missing, aes(x = OffAge_Missing, y = Proportion, fill = OffAge_Missing)) +
+  geom_bar(stat = "identity") +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Missing Data for Offender Age in Homicide Reports ",
+       x = "Offender Age",
+       y = "Percentage of Cases",
+       fill = "Offender Age",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) +
+  theme(axis.text.x = element_blank()) 
+```
+
+#### `OffAge_Missing` by `Solved`
+
+```{r bar plot offage_missing by solved}
+data_offage_missing <- data %>%
+  group_by(Solved, OffAge_Missing) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Solved) %>%
+  mutate(Proportion = Count / sum(Count),
+         OffAge_Missing = fct_reorder(OffAge_Missing, Proportion, .desc = TRUE))
+
+ggplot(data_offage_missing, aes(x = Solved, y = Proportion, fill = OffAge_Missing)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  scale_fill_custom +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Missing Data for Offender Age in Solved vs. Unsolved Homicides",
+       x = "Case Status",
+       y = "Percentage of Cases",
+       fill = "Offender Age",
+       caption = expression(paste(italic("Note:"), "Plot created from U.S. homicide data from 1976-2024"))) 
+```
+
+## Modelling
+
+After some consideration, I chose to use random forest modelling to create a classification model for predicting whether a given homicide case would be solved.
+
+Several factors contributed to this decision. Initially, I planned to use a logistic regression model to predict case status (i.e., solved vs. unsolved) from the predictors listed in the project introduction.
+
+However, several factors led me to believe that this may not be an appropriate choice of model. First, it was evident to me that an NHST approach would be largely pointless given the extremely large sample size (i.e., *n* = 874,958). As such, it would be necessary to rely on effect sizes to provide any kind of conclusions about the importance of a given predictor in a relative (i.e., comparing predictors) or practical manner.
+
+Furthermore, a preliminary exploration of the research literature indicated that there was little relevant empirical research into the research question that I selected. This meant that I had no a priori grounds for selecting predictor variables (aside from their availability in the dataset) nor for assuming that the relationship between a given predictor and the outcome was linear. It seemed possible to me that the relationship between predictors and the outcome might be interactive or nonlinear, but I had no literature that would enable me to stipulate these relationships ahead of time using previous data or theory.
+
+Relatedly, a deeper review of the dataset indicated that several of the categorical variables (e.g., `Weapon`, `Relationship`) had a large number of levels. This would make it difficult to disentangle the value of each level of these variables in the prediction of whether a homicide case will be solved. Two approaches for partially addressing this obstacle would be to conceptually simplify levels (e.g., aggregating `relationship` levels such as girlfriend, boyfriend, husband, wife into an overarching "partner" level) or eliminate less common levels. However, both of these approaches would require some kind of a priori knowledge to do so responsibly.
+
+Finally, the ultimate goal of the project was to provide a *useful* model for predicting the likely case status of future cases. Hypothetically, this model would help law enforcement officials make decisions in terms of prioritization and resource allocation in future murder cases. For instance, if a future homicide case was predicted to be unsolved by the model, law enforcement officials could allocate a greater number of personnel to investigating it or have research-based grounds for petitioning for additional resources from other law enforcement bodies (e.g., municipal or tribal police requesting aid from state or federal bodies). This indicated that the primary goal of the model was *predictive* rather than explanatory.
+
+Given these considerations, a machine learning (ML) model seemed most apt for this particular research question. I had a classification problem where I was interested in maximizing the predictive value of the model. Furthermore, I had no grounds for selecting, modifying, or interpreting the predictors of the outcome variable. While I was interested in the relative importance of predictors (and their levels), this would be more elegantly achieved in a ML model than in a logistic regression model. In particular, I believed a random forest model would answer the research question in the most effective and practically useful way possible.
+
+### Step 1: Selecting Model Features
+
+The results of the EDA conducted previously indicate that some of the variables may be inappropriate for predictive modelling. Specifically, some variables occurred in unsolved cases almost 100% of the time and occurred far less frequently in solved cases. The following variables displayed this tendency:
+
+-   `OffAge` (in particular, `NA` values)
+-   `OffSex` (in particular, the "Unknown" level);
+-   `OffRace` (in particular, the "Unknown" level);
+-   `OffEthnic` (in particular, the "Unknown" level);
+-   `Relationship` (in particular, the "Relationship not determined" level);
+-   `OffAge_Missing` (in particular, the "Missing" level)
+
+In essence, these variables reflect whether an offender has been identified or apprehended, which is very close to the outcome that I am trying to predict (i.e., `Solved`). Case reports that are unsolved will, for all intents and purposes, *always* lack information regarding the offender *until* they are solved.
+
+This is problematic for several reasons. Statistically, these variables act as a reliable cue for the model to predict case status solely based on this set of variables. As such, the aforementioned variables can be argued to be "proxies" for the outcome variable (i.e., whether a homicide case will be solved). This artificially increases the accuracy of model classification.
+
+From a theoretical perspective, this is also problematic. The inclusion of the aforementioned variables introduces a tautology into prediction, insofar as proxies of the outcome are included as predictors of the outcome. In essence, the model is trying to predict an outcome that it already "knows" from the outset (e.g., "I predict that this case will be unsolved because variable *x* says that it is unsolved"). While random forest models are not designed to have an underlying causal structure (e.g., predictor *x* has an effect on outcome *y*), this is certainly problematic from an applied perspective.
+
+In this vein, the inclusion of these variables limits the utility of this model in terms of predicting novel cases. The primary use case for this project was to provide law enforcement officials (LEOs) with a useful resource that would provide an empirically derived probability that a homicide case would be solved based on information that would be available to LEOs early on in the investigation (e.g., what kind of weapon was used, victim sex). Features that are dependent on case resolution status, such as details about the offender, would not be available at this stage and would thus be irrelevant to the model's intended use.
+
+Based on these factors, I made the decision to drop these features from the random forest model.
+
+```{r feature selection}
+# using dplyr to select the variables to be used in modelling
+
+data <- data %>%
+  select(-c(OffAge, OffSex, OffRace, OffEthnic, Relationship, OffAge_Missing))
+```
+
+### Step 2: Splitting Data into Training and Testing Sets
+
+Next, I split the data into training and testing sets using the 80/20 rule (i.e., 80% of the data was retained for training and 20% was held out for testing). This allows me to evaluate whether the model will generalize to unseen data. I used the `rsample` package (a part of the `tidymodels` ecosystem)
+
+```{r split}
+set.seed(123) # setting seed for reproducibility
+
+data_split <- initial_split(
+  data,
+  prop = 0.8, # 80% of the data will be used for training
+  strata = Solved # stratified sampling based on Solved to ensure roughly equal proportions in train/test data
+)
+
+train_data <- training(data_split) # extracting training set data
+test_data <- testing(data_split) # extracting testing set data
+```
+
+### Step 3: Model Specification and Workflow Creation
+
+I am using the `tidymodels` workflow to implement my machine learning (ML) algorithm. This provides a cohesive ecosystem for building, tuning, and evaluating models within *R*. As I have processed my data in previous steps and conducted my EDA, I can start by creating my model specification in the package.
+
+```{r model specification}
+# using the `rand_forest` function in `parsnip` for model specification
+rf_spec <- rand_forest(
+  mode = "classification", # indicating that this is a classification problem
+  trees = 500, # specifying the number of decision trees
+  mtry = tune(), # tuning the number of predictors sampled at splits
+  min_n = tune() # tuning the minimum node size for splits
+) %>%
+  set_engine(
+    "ranger", # using the `ranger` engine as it is faster
+     importance = "impurity" # calculating feature importance using impurity reduction
+  )
+
+# creating a workflow object
+rf_workflow <- workflow() # initializing an empty workflow
+
+# adding model and formula to workflow
+
+rf_workflow <- rf_workflow %>% 
+  add_model(rf_spec) # adding model to workflow
+
+# adding formula to workflow
+
+rf_workflow <- rf_workflow %>%
+  add_formula(Solved ~ .)
+```
+
+### Step 4: Tuning Hyperparameters
+
+To tune the hyperparameters, I will be using 5-fold cross-validation (courtesy of `rsample`) to identify the values for `mtry`, and `min_n` that produces a model with the best fit for the data.
+
+```{r tuning}
+cv_folds <- vfold_cv( # defining resampling process for cross-validation
+  train_data, # specifiying the training data for construction of cross-validation folds
+  v = 5, # using 5 cv folds
+  strata = Solved # stratified sampling by Solved to ensure similar class distribution
+)
+
+rf_grid <- grid_random( # defining a grid of hyperparameters to test
+  mtry(range = c(2, 10)), # range of mtry values
+  min_n(range = c(5, 25)), # range of min_n values
+  size = 20 # sampling 20 random combinations
+)
+
+num_cores <- detectCores() - 1 # designating an object with 1 less core than is on my computer
+
+cl <- makeCluster(num_cores) # setting up a cluster for parallel processing
+registerDoParallel(cl) # beginning parallel processing
+
+tuned_results <- tune_grid( # initial tuning of hyperparameters using the tune package
+  rf_workflow, # inserting workflow with random forest model
+  resamples = cv_folds, # resampling according to the cv_folds object
+  grid = rf_grid, # using the previously defined grid
+  metrics = metric_set(roc_auc, sensitivity, specificity) # using the auc, sensitivity, and specificity to compare tunings
+)
+
+stopCluster(cl) # stopping use of cluster
+registerDoSEQ() # going back to sequential processing
+
+tuning_summary <- collect_metrics(tuned_results) # using the collect_metrics function to format results
+
+tuning_summary %>% # visualizing tuning results by hyperparameter
+  filter(.metric == "roc_auc") %>% # filtering results by auc
+  arrange(desc(mean)) # arranging in descending order
+
+tuned_results %>% 
+  collect_metrics() %>% # using collect_metrics to format results
+  filter(.metric == "roc_auc") %>% # filtering by auc
+  select(mean, mtry, min_n) %>% # selecting important variables
+  pivot_longer(mtry:min_n, # pivoting for plotting
+               values_to = "value",
+               names_to = "parameter") %>%
+  ggplot(aes(value, mean, color = parameter)) + # using a faceted scatter plot 
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~ parameter, scales = "free_x") +
+  labs(x = NULL, y = "AUC")
+
+rf_spec <- rand_forest( # updating model specification
+  mode = "classification",
+  trees = 500,  # Set the number of trees
+  mtry = tune(),
+  min_n = tune()
+) %>%
+  set_engine(
+    "ranger",
+    importance = "impurity")
+
+rf_workflow <- rf_workflow %>%
+  update_model(rf_spec) # updating workflow with new model spec
+
+targeted_grid <- grid_regular(
+  mtry(range = c(3, 5)), # based on previous plot
+  min_n(range = c(15, 25)), # based on previous plot
+  levels = 3
+)
+
+cl <- makeCluster(num_cores) 
+registerDoParallel(cl) 
+
+final_tuning <- tune_grid(
+  rf_workflow,
+  resamples = cv_folds,
+  grid = targeted_grid,
+  metrics = metric_set(roc_auc, sensitivity, specificity)
+)
+
+stopCluster(cl) # stopping use of cluster
+registerDoSEQ() # going back to sequential processing
+
+final_summary <- collect_metrics(final_tuning)
+
+show_best(final_tuning, metric = "roc_auc") # showing the top performing models by auc
+
+best_auc <- select_best(final_tuning, metric = "roc_auc") # selecting the best performing hyperparameters
+
+final_rf_workflow <- finalize_workflow(
+  rf_workflow, # original workflow
+  best_auc # best-performing hyperparameters
+)
+```
+
+### Step 5: Training and Testing Model
+
+After identifying the optimal set of hyperparameters, I will be deploying the model on the training/testing set to evaluate it.
+
+```{r training and testing}
+fitted_wf <- fit(final_rf_workflow, data = train_data)
+
+test_pred <- test_data %>%
+  select(Solved) %>%
+  bind_cols(predict(fitted_wf, test_data, type = "class")) %>%
+  bind_cols(predict(fitted_wf, test_data, type = "prob"))
+
+metrics_class <- metric_set(accuracy, sensitivity, specificity, ppv, npv, f_meas) # setting desired metrics
+
+metrics_class(test_pred,
+              truth = Solved,
+              estimate = .pred_class)
+
+metrics_prob <- metric_set(roc_auc, brier_class)
+
+metrics_prob(test_pred,
+             truth = Solved,
+             .pred_Unsolved)
+
+roc_curve <- roc_curve(test_pred, # generating roc object
+                       Solved, # truth
+                       .pred_Unsolved) # prob for class 1 (i.e., unsolved)
+
+autoplot(roc_curve) + # using the autoplot function to create an roc plot
+  labs(title = "ROC Curve of Random Forest Model")
+
+fitted_rf <- fitted_wf %>%
+  extract_fit_parsnip()
+
+vip_train <- train_data %>%
+  select(-Solved)
+
+explainer_data <- train_data %>%
+  mutate(Solved = if_else(Solved == "Unsolved", 0, 1))
+
+explainer_rf <- explain_tidymodels(
+  fitted_rf,
+  data = vip_train,
+  y = explainer_data$Solved,
+  label = "random forest",
+  verbose = TRUE
+)
+
+model_parts(explainer = explainer_rf,
+            type = "difference")
+```
+
+### Step 6: Identifying Optimal Threshold
+
+Lastly, I will be using the `pROC` and `caret` packages in order to identify the classification threshold that maximizes Youden's *J*. This metric is a summary measure of a classification algorithm that incorporates both sensitivity and specificity to provide a global measure of "informedness". In practice, this index identifies the threshold that maximizes the vertical distance between the ROC curve for a given classification algorithm and the diagonal line representing a "random" approach to classifying cases.
+
+```{r optimal threshold}
+library(pROC) # loading `pROC` and `caret` package later in code to avoid overlapping function names
+library(caret)
+
+pROC_curve <- roc(test_data$Solved, test_pred$.pred_Solved) # building roc object
+
+optimal_threshold <- coords(pROC_curve, # specifying the original roc obj
+                            "best", # indicating what coordinates to look for
+                            ret = "threshold") # asking to return threshold value
+
+print(optimal_threshold) # printing threshold that maximizes Youden's J
+
+predicted_class <- factor(ifelse(test_pred$.pred_Solved > 0.7161439, "Solved", "Unsolved"),
+                          levels = c("Unsolved", "Solved")) # Using the optimal threshold to classify predictions
+
+conf_matrix <- confusionMatrix(predicted_class, test_data$Solved,
+                               mode = "everything") # Building new confusion matrix using this threshold
+
+print(conf_matrix)
+```
